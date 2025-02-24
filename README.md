@@ -3,6 +3,10 @@ Simple implementation of RAG (Retrial-Augmented Generation), that works with loc
 
 This tool can generate vector embedding for set of text files. Then it can use those embedding to find a closes document to a user query. Then it can query and LLM with that document prepended to the context.
 
+# Prerequisites
+
+You will need [Ollama](https://ollama.com/) running on your local or remote machine.
+
 # Build and install
 
 ```bash

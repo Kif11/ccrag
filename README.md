@@ -4,6 +4,12 @@ Simple implementation of RAG (Retrieval-Augmented Generation) that works with lo
 
 This tool can generate vector embeddings for a set of text files. Then it can use those embeddings to find the closest document to a user query. Finally, it can query an LLM with that document prepended to the context.
 
+# Key Features
+- Generate vector embeddings for local text documents
+- Semantic search across document corpus
+- Fully local processing with Ollama integration
+- No other dependencies other then Ollama
+
 # Prerequisites
 
 You will need [Ollama](https://ollama.com/) running on your local or remote machine.

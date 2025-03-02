@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	cc "github.com/kif11/cclib"
@@ -23,7 +24,12 @@ type EmbeddingResponse struct {
 	TotalDuration   int64       `json:"total_duration"`
 	LoadDuration    int64       `json:"load_duration"`
 	PromptEvalCount int         `json:"prompt_eval_count"`
-	Source          string      `json:"source"`
+}
+
+type EmbeddingFile struct {
+	Embeddings [][]float64 `json:"embeddings"`
+	ChunkSise  int         `json:"chunk_size"`
+	Source     string      `json:"source"`
 }
 
 type ScoredResult struct {
@@ -49,7 +55,8 @@ type OllamaResponse struct {
 var ollamaAddress = cc.GetEnv("CCRAG_OLLAMA_ADDRESS", "http://localhost:11434")
 var embedModel = cc.GetEnv("CCRAG_EMBED_MODEL", "mxbai-embed-large")
 var llmModel = cc.GetEnv("CCRAG_LLM_MODEL", "mistral:latest")
-var maxResults = cc.GetEnvInt("CCRAG_MAX_RESULTS", 3)
+var maxResults = cc.GetEnvInt("CCRAG_MAX_RESULTS", 10)
+var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 500)
 var embedDirName = "embed"
 var embedFormat = "json"
 
@@ -98,6 +105,44 @@ func embed(data string) (EmbeddingResponse, error) {
 	return result, nil
 }
 
+func readFileInChunks(filename string, chunkSize int) ([]string, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	chunks := []string{}
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanWords)
+
+	var wordCount int
+	var currentChunk strings.Builder
+
+	for scanner.Scan() {
+		word := scanner.Text()
+		currentChunk.WriteString(word + " ")
+		wordCount++
+
+		if wordCount == chunkSize {
+			chunks = append(chunks, currentChunk.String())
+			currentChunk.Reset()
+			wordCount = 0
+		}
+	}
+
+	// Add any remaining words
+	if currentChunk.Len() > 0 {
+		chunks = append(chunks, currentChunk.String())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return chunks, err
+	}
+
+	return chunks, nil
+}
+
 func main() {
 	embedMode := flag.Bool("e", false, "Embedding mode. Process list of text file provided over stdin.")
 	query := flag.String("q", "", "Query mode. Search for the given query. And generate LLM response with context from similarity search.")
@@ -143,7 +188,7 @@ func main() {
 		}
 
 		for _, p := range paths {
-			data, err := os.ReadFile(p)
+			chunks, err := readFileInChunks(p, chunkSize)
 			if err != nil {
 				fmt.Printf("[!] Can not read source file %s\n", p)
 				continue
@@ -154,6 +199,7 @@ func main() {
 			embedFilePath := filepath.Join(embedDir, embedFileName)
 
 			if _, err := os.Stat(embedFilePath); err == nil {
+				// TODO: Add ModTime comparison with a stored date of last modification inside embedding file
 				if *verbose {
 					fmt.Printf("[-] Skipping existing file: %s\n", embedFilePath)
 				}
@@ -161,26 +207,35 @@ func main() {
 			}
 
 			if *verbose {
-				fmt.Printf("[D] Embedding: %s\n", p)
+				fmt.Printf("[D] Embedding: %s %d\n", p, len(chunks))
 			}
 
-			res, err := embed(string(data))
-			if err != nil {
-				fmt.Printf("[!] Failed to generate embedding for source file %s\n", p)
-				continue
+			embeddings := [][]float64{}
+			for _, c := range chunks {
+				res, err := embed(c)
+				if err != nil {
+					fmt.Printf("[!] Failed to generate embedding for source file %s\n", p)
+					continue
+				}
 
+				// TODO: Check if embedding exist in the array
+				embeddings = append(embeddings, res.Embeddings[0])
 			}
 
-			res.Source = p
+			embededFile := EmbeddingFile{
+				Embeddings: embeddings,
+				ChunkSise:  chunkSize,
+				Source:     p,
+			}
 
-			embedData, err := json.Marshal(res)
+			embedJson, err := json.Marshal(embededFile)
 			if err != nil {
 				fmt.Printf("[!] Failed to marshal source file %s\n", p)
 				continue
 
 			}
 
-			if err := os.WriteFile(embedFilePath, embedData, 0644); err != nil {
+			if err := os.WriteFile(embedFilePath, embedJson, 0644); err != nil {
 				fmt.Printf("[!] Error writing file: %s\n", embedFilePath)
 			}
 		}
@@ -208,7 +263,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			var embNote EmbeddingResponse
+			var embNote EmbeddingFile
 			if err := json.Unmarshal(data, &embNote); err != nil {
 				log.Fatal(err)
 			}
@@ -218,7 +273,11 @@ func main() {
 				continue
 			}
 
-			score := cosineSimilarity(embUserQuery.Embeddings[0], embNote.Embeddings[0])
+			var score float64
+			for _, emb := range embNote.Embeddings {
+				score += cosineSimilarity(embUserQuery.Embeddings[0], emb)
+			}
+			score /= float64(len(embNote.Embeddings))
 
 			if *verbose {
 				fmt.Printf("[D] Scoring file: %s, %f\n", file, score)

@@ -46,6 +46,7 @@ export CCRAG_OLLAMA_ADDRESS="http://localhost:11434"
 export CCRAG_EMBED_MODEL="mxbai-embed-large"
 export CCRAG_LLM_MODEL="mistral:latest"
 export CCRAG_MAX_RESULTS=3
+export CCRAG_WORDS_PER_CHUNK=500
 ```
 
 # How It Works

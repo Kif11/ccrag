@@ -143,6 +143,48 @@ func readFileInChunks(filename string, chunkSize int) ([]string, error) {
 	return chunks, nil
 }
 
+func embedPath(in string, out string) error {
+	chunks, err := readFileInChunks(in, chunkSize)
+	if err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(out); err == nil {
+		// TODO: Add ModTime comparison with a stored date of last modification inside embedding file
+		// Skip existing files
+		return nil
+	}
+
+	embeddings := [][]float64{}
+	for _, c := range chunks {
+		res, err := embed(c)
+		if err != nil {
+			fmt.Printf("[!] Failed to generate embedding for source file %s\n", in)
+			continue
+		}
+
+		// TODO: Check if embedding exist in the array
+		embeddings = append(embeddings, res.Embeddings[0])
+	}
+
+	embeddedFile := EmbeddingFile{
+		Embeddings: embeddings,
+		ChunkSize:  chunkSize,
+		Source:     in,
+	}
+
+	embedJson, err := json.Marshal(embeddedFile)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(out, embedJson, 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 	embedMode := flag.Bool("e", false, "Embedding mode. Process list of text file provided over stdin.")
 	query := flag.String("q", "", "Query mode. Search for the given query. And generate LLM response with context from similarity search.")
@@ -174,6 +216,7 @@ func main() {
 	}
 
 	if *embedMode {
+
 		// Accept list of paths from stdin
 		scanner := bufio.NewScanner(os.Stdin)
 
@@ -188,57 +231,21 @@ func main() {
 		}
 
 		for _, p := range paths {
-			chunks, err := readFileInChunks(p, chunkSize)
-			if err != nil {
-				fmt.Printf("[!] Can not read source file %s\n", p)
-				continue
-			}
-
 			name := cc.FileName(p)
 			embedFileName := name + "." + embedFormat
 			embedFilePath := filepath.Join(embedDir, embedFileName)
 
-			if _, err := os.Stat(embedFilePath); err == nil {
-				// TODO: Add ModTime comparison with a stored date of last modification inside embedding file
-				if *verbose {
-					fmt.Printf("[-] Skipping existing file: %s\n", embedFilePath)
-				}
-				continue
-			}
-
 			if *verbose {
-				fmt.Printf("[D] Embedding: %s %d\n", p, len(chunks))
+				fmt.Printf("[D] Embedding: %s\n", p)
 			}
 
-			embeddings := [][]float64{}
-			for _, c := range chunks {
-				res, err := embed(c)
-				if err != nil {
-					fmt.Printf("[!] Failed to generate embedding for source file %s\n", p)
-					continue
-				}
-
-				// TODO: Check if embedding exist in the array
-				embeddings = append(embeddings, res.Embeddings[0])
-			}
-
-			embeddedFile := EmbeddingFile{
-				Embeddings: embeddings,
-				ChunkSize:  chunkSize,
-				Source:     p,
-			}
-
-			embedJson, err := json.Marshal(embeddedFile)
+			err := embedPath(p, embedFilePath)
 			if err != nil {
-				fmt.Printf("[!] Failed to marshal source file %s\n", p)
+				fmt.Println(err)
 				continue
-
-			}
-
-			if err := os.WriteFile(embedFilePath, embedJson, 0644); err != nil {
-				fmt.Printf("[!] Error writing file: %s\n", embedFilePath)
 			}
 		}
+
 	} else if *query != "" {
 		embUserQuery, err := embed(*query)
 		if err != nil {

@@ -28,7 +28,7 @@ type EmbeddingResponse struct {
 
 type EmbeddingFile struct {
 	Embeddings [][]float64 `json:"embeddings"`
-	ChunkSise  int         `json:"chunk_size"`
+	ChunkSize  int         `json:"chunk_size"`
 	Source     string      `json:"source"`
 }
 
@@ -222,13 +222,13 @@ func main() {
 				embeddings = append(embeddings, res.Embeddings[0])
 			}
 
-			embededFile := EmbeddingFile{
+			embeddedFile := EmbeddingFile{
 				Embeddings: embeddings,
-				ChunkSise:  chunkSize,
+				ChunkSize:  chunkSize,
 				Source:     p,
 			}
 
-			embedJson, err := json.Marshal(embededFile)
+			embedJson, err := json.Marshal(embeddedFile)
 			if err != nil {
 				fmt.Printf("[!] Failed to marshal source file %s\n", p)
 				continue

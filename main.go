@@ -230,20 +230,29 @@ func main() {
 			os.Exit(1)
 		}
 
+		maxWorkers := 4
+		limiter := make(chan bool, maxWorkers)
+
 		for _, p := range paths {
-			name := cc.FileName(p)
-			embedFileName := name + "." + embedFormat
-			embedFilePath := filepath.Join(embedDir, embedFileName)
+			limiter <- true
 
-			if *verbose {
-				fmt.Printf("[D] Embedding: %s\n", p)
-			}
+			go func() {
+				name := cc.FileName(p)
+				embedFileName := name + "." + embedFormat
+				embedFilePath := filepath.Join(embedDir, embedFileName)
 
-			err := embedPath(p, embedFilePath)
-			if err != nil {
-				fmt.Println(err)
-				continue
-			}
+				if *verbose {
+					fmt.Printf("[D] Embedding: %s\n", p)
+				}
+
+				err := embedPath(p, embedFilePath)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+
+				defer func() { <-limiter }()
+			}()
 		}
 
 	} else if *query != "" {

@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	cc "github.com/kif11/cclib"
@@ -56,7 +56,7 @@ var ollamaAddress = cc.GetEnv("CCRAG_OLLAMA_ADDRESS", "http://localhost:11434")
 var embedModel = cc.GetEnv("CCRAG_EMBED_MODEL", "mxbai-embed-large")
 var llmModel = cc.GetEnv("CCRAG_LLM_MODEL", "mistral:latest")
 var maxResults = cc.GetEnvInt("CCRAG_MAX_RESULTS", 10)
-var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 500)
+var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 100)
 var embedDirName = "embed"
 var embedFormat = "json"
 
@@ -68,11 +68,11 @@ var client = &http.Client{
 // product) between two vectors that must be of the same size.
 func cosineSimilarity(a, b []float64) float64 {
 	if len(a) != len(b) {
-		panic("different lengths")
+		return 0
 	}
 
 	var aMag, bMag, dotProduct float64
-	for i := 0; i < len(a); i++ {
+	for i := range a {
 		aMag += a[i] * a[i]
 		bMag += b[i] * b[i]
 		dotProduct += a[i] * b[i]
@@ -97,6 +97,13 @@ func embed(data string) (EmbeddingResponse, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[DEBUG] Response body: %s\n", string(body))
+		resp.Body = io.NopCloser(bytes.NewBuffer(body))
+		return EmbeddingResponse{}, fmt.Errorf("request failed with status %d\n", resp.StatusCode)
+	}
+
 	var result EmbeddingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return EmbeddingResponse{}, err
@@ -105,39 +112,95 @@ func embed(data string) (EmbeddingResponse, error) {
 	return result, nil
 }
 
-func readFileInChunks(filename string, chunkSize int) ([]string, error) {
-	file, err := os.Open(filename)
+func tokenize(text string) ([]int, error) {
+	payload := map[string]string{
+		"model":   embedModel,
+		"content": text,
+	}
+
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	chunks := []string{}
-	scanner := bufio.NewScanner(file)
-	scanner.Split(bufio.ScanWords)
+	resp, err := client.Post(ollamaAddress+"/api/tokenize", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	var wordCount int
-	var currentChunk strings.Builder
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[DEBUG] Response body: %s\n", string(body))
+		resp.Body = io.NopCloser(bytes.NewBuffer(body))
+		return nil, fmt.Errorf("tokenize request failed with status %d", resp.StatusCode)
+	}
 
-	for scanner.Scan() {
-		word := scanner.Text()
-		currentChunk.WriteString(word + " ")
-		wordCount++
+	var result struct {
+		Tokens []int `json:"tokens"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
 
-		if wordCount == chunkSize {
-			chunks = append(chunks, currentChunk.String())
-			currentChunk.Reset()
-			wordCount = 0
+	return result.Tokens, nil
+}
+
+func detokenize(tokens []int) (string, error) {
+	payload := map[string]interface{}{
+		"model":  embedModel,
+		"tokens": tokens,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Post(ollamaAddress+"/api/detokenize", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("detokenize request failed with status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return result.Content, nil
+}
+
+func readFileInChunks(filename string, chunkSize int) ([]string, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	text := string(data)
+	tokens, err := tokenize(text)
+	if err != nil {
+		return nil, err
+	}
+
+	var chunks []string
+	for i := 0; i < len(tokens); i += chunkSize {
+		end := i + chunkSize
+		if end > len(tokens) {
+			end = len(tokens)
 		}
-	}
-
-	// Add any remaining words
-	if currentChunk.Len() > 0 {
-		chunks = append(chunks, currentChunk.String())
-	}
-
-	if err := scanner.Err(); err != nil {
-		return chunks, err
+		chunkTokens := tokens[i:end]
+		chunkText, err := detokenize(chunkTokens)
+		if err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, chunkText)
 	}
 
 	return chunks, nil
@@ -163,7 +226,11 @@ func embedPath(in string, out string) error {
 			continue
 		}
 
-		// TODO: Check if embedding exist in the array
+		if len(res.Embeddings) == 0 {
+			fmt.Printf("[!] No embedding found in the response. Input chunk len %d\n", len(c))
+			continue
+		}
+
 		embeddings = append(embeddings, res.Embeddings[0])
 	}
 
@@ -205,6 +272,7 @@ func main() {
 		fmt.Printf("[D] CCRAG_OLLAMA_ADDRESS: %s\n", ollamaAddress)
 		fmt.Printf("[D] CCRAG_EMBED_MODEL: %s\n", embedModel)
 		fmt.Printf("[D] CCRAG_LLM_MODEL: %s\n", llmModel)
+		fmt.Printf("[D] CCRAG_WORDS_PER_CHUNK: %d\n", chunkSize)
 	}
 
 	if _, err := os.Stat(embedDir); os.IsNotExist(err) {

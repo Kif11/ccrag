@@ -56,7 +56,7 @@ var ollamaAddress = cc.GetEnv("CCRAG_OLLAMA_ADDRESS", "http://localhost:11434")
 var embedModel = cc.GetEnv("CCRAG_EMBED_MODEL", "mxbai-embed-large")
 var llmModel = cc.GetEnv("CCRAG_LLM_MODEL", "mistral:latest")
 var maxResults = cc.GetEnvInt("CCRAG_MAX_RESULTS", 10)
-var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 500)
+var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 150)
 var embedDirName = "embed"
 var embedFormat = "json"
 

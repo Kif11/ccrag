@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -56,7 +57,7 @@ var ollamaAddress = cc.GetEnv("CCRAG_OLLAMA_ADDRESS", "http://localhost:11434")
 var embedModel = cc.GetEnv("CCRAG_EMBED_MODEL", "mxbai-embed-large")
 var llmModel = cc.GetEnv("CCRAG_LLM_MODEL", "mistral:latest")
 var maxResults = cc.GetEnvInt("CCRAG_MAX_RESULTS", 10)
-var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 150)
+var chunkSize = cc.GetEnvInt("CCRAG_WORDS_PER_CHUNK", 100)
 var embedDirName = "embed"
 var embedFormat = "json"
 
@@ -80,6 +81,11 @@ func cosineSimilarity(a, b []float64) float64 {
 	return dotProduct / (math.Sqrt(aMag) * math.Sqrt(bMag))
 }
 
+func getBodyAsText(cl io.ReadCloser) string {
+	body, _ := io.ReadAll(cl)
+	return string(body)
+}
+
 func embed(data string) (EmbeddingResponse, error) {
 	payload := map[string]string{
 		"model": embedModel,
@@ -96,6 +102,10 @@ func embed(data string) (EmbeddingResponse, error) {
 		return EmbeddingResponse{}, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return EmbeddingResponse{}, fmt.Errorf("request failed with status %d, %s", resp.StatusCode, getBodyAsText(resp.Body))
+	}
 
 	var result EmbeddingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -159,11 +169,15 @@ func embedPath(in string, out string) error {
 	for _, c := range chunks {
 		res, err := embed(c)
 		if err != nil {
-			fmt.Printf("[!] Failed to generate embedding for source file %s\n", in)
+			fmt.Printf("[!] Failed to generate embedding for source file %s, %s\n", in, err)
 			continue
 		}
 
-		// TODO: Check if embedding exist in the array
+		if len(res.Embeddings) == 0 {
+			fmt.Printf("[!] Embedding are empty for file %s\n", in)
+			continue
+		}
+
 		embeddings = append(embeddings, res.Embeddings[0])
 	}
 
@@ -205,6 +219,7 @@ func main() {
 		fmt.Printf("[D] CCRAG_OLLAMA_ADDRESS: %s\n", ollamaAddress)
 		fmt.Printf("[D] CCRAG_EMBED_MODEL: %s\n", embedModel)
 		fmt.Printf("[D] CCRAG_LLM_MODEL: %s\n", llmModel)
+		fmt.Printf("[D] CCRAG_WORDS_PER_CHUNK: %d\n", chunkSize)
 	}
 
 	if _, err := os.Stat(embedDir); os.IsNotExist(err) {
@@ -246,12 +261,11 @@ func main() {
 				}
 
 				err := embedPath(p, embedFilePath)
+				defer func() { <-limiter }()
 				if err != nil {
-					fmt.Println(err)
+					fmt.Printf("[!] Error embedding file: %s\n", err)
 					return
 				}
-
-				defer func() { <-limiter }()
 			}()
 		}
 
